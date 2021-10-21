@@ -1,0 +1,6 @@
+.DS_Store
+.ini
+.env
+Icon?
+*.log
+/logs/
