@@ -1,10 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# Author of original script: Philipp Meschenmoser, DBVIS, Uni Konstanz
-# Python wrapper with functions using Movebank's REST API to view available studies, read data and accept license terms programmatically
-# Acknowledgements to Anne K. Scharf and her great moveACC package, see https://gitlab.com/anneks/moveACC
-
 import csv
 import hashlib
 import io
@@ -13,6 +6,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 
+import dateparser
 import keyring
 import numpy as np
 import pandas as pd
@@ -26,9 +20,9 @@ class MovebankAPI:
 
     def callMovebankAPI(self, params):
         """"
-        params: Requests Movebank API with ((param1, value1), (param2, value2),).
-        Return the API response as plain text.
-        """
+		params: Requests Movebank API with ((param1, value1), (param2, value2),).
+		Return the API response as plain text.
+		"""
         response = requests.get(
             'https://www.movebank.org/movebank/service/direct-read',
             params=params,
@@ -49,7 +43,7 @@ class MovebankAPI:
                     'https://www.movebank.org/movebank/service/direct-read',
                     params=params,
                     cookies=response.cookies,
-                    auth=(os.environ['mbus'], os.environ['mbpw']))
+                    auth=(self.username, self.password))
                 if response.status_code == 403:  # incorrect hash
                     print("Incorrect hash")
                     return ''
@@ -86,23 +80,23 @@ class MovebankAPI:
                             sensor_type_id=653,
                             transform=False):
         """
-        SENSORS
-        ===============================================================================
-        description,external_id,id,is_location_sensor,name
-        "","bird-ring",397,true,"Bird Ring"
-        "","gps",653,true,"GPS"
-        "","radio-transmitter",673,true,"Radio Transmitter"
-        "","argos-doppler-shift",82798,true,"Argos Doppler Shift"
-        "","natural-mark",2365682,true,"Natural Mark"
-        "","acceleration",2365683,false,"Acceleration"
-        "","solar-geolocator",3886361,true,"Solar Geolocator"
-        "","accessory-measurements",7842954,false,"Accessory Measurements"
-        "","solar-geolocator-raw",9301403,false,"Solar Geolocator Raw"
-        "","barometer",77740391,false,"Barometer"
-        "","magnetometer",77740402,false,"Magnetometer"
-        "","orientation",819073350,false,"Orientation"
-        "","solar-geolocator-twilight",914097241,false,"Solar Geolocator Twilight"
-        """
+		SENSORS
+		===============================================================================
+		description,external_id,id,is_location_sensor,name
+		"","bird-ring",397,true,"Bird Ring"
+		"","gps",653,true,"GPS"
+		"","radio-transmitter",673,true,"Radio Transmitter"
+		"","argos-doppler-shift",82798,true,"Argos Doppler Shift"
+		"","natural-mark",2365682,true,"Natural Mark"
+		"","acceleration",2365683,false,"Acceleration"
+		"","solar-geolocator",3886361,true,"Solar Geolocator"
+		"","accessory-measurements",7842954,false,"Accessory Measurements"
+		"","solar-geolocator-raw",9301403,false,"Solar Geolocator Raw"
+		"","barometer",77740391,false,"Barometer"
+		"","magnetometer",77740402,false,"Magnetometer"
+		"","orientation",819073350,false,"Orientation"
+		"","solar-geolocator-twilight",914097241,false,"Solar Geolocator Twilight"
+		"""
         params = (('entity_type', 'event'), ('study_id', self.study_id),
                   ('individual_id', individual_id),
                   ('sensor_type_id', sensor_type_id), ('attributes', 'all'))
@@ -135,13 +129,11 @@ class MovebankAPI:
 
     @staticmethod
     def transformRawACC(accevents, unit='m/s2', sensitivity='high'):
-        """
-        Transforms raw tri-axial acceleration from X Y Z X Y X Y Z to
-        [(ts_interpol, deployment, X', Y', Z'),...] X', Y', Z' are in m/s^2 or g.
-        Assumes e-obs acceleration sensors.
-        Acknowledgments to Anne K. Scharf and her great moveACC package,
-        see https://gitlab.com/anneks/moveACC
-        """
+        #  Transforms raw tri-axial acceleration from X Y Z X Y X Y Z to [(ts_interpol,
+        # deployment, X', Y', Z'),...]
+        #  X', Y', Z' are in m/s^2 or g. Assumes e-obs acceleration sensors.
+        #  Acknowledgments to Anne K. Scharf and her great moveACC package, see
+        # https://gitlab.com/anneks/moveACC
 
         ts_format = '%Y-%m-%d %H:%M:%S.%f'
         out = []
@@ -191,8 +183,8 @@ class MovebankAPI:
         print(json.dumps(list_, indent=4))
 
     @staticmethod
-    def to_pandas(list_, sensor_type=None, save_to=None):
-        if sensor_type and sensor_type.lower() == 'acc':
+    def to_pandas(list_, sensor_type=None, save_to=None, transformed=False):
+        if sensor_type and sensor_type.lower() == 'acc' and transformed:
             arr = np.array(list_)
             m, n, r = arr.shape
             out_arr = np.column_stack((np.repeat(np.arange(m),
@@ -211,7 +203,7 @@ class MovebankAPI:
                 'AccY': 'float32',
                 'AccZ': 'float32'
             })
-        elif sensor_type and sensor_type.lower() == 'gps':
+        elif sensor_type and sensor_type.lower() == 'gps' and transformed:
             df = pd.DataFrame(list_,
                               columns=[
                                   'timestamp', 'deployment_id', 'location_lat',
@@ -228,3 +220,59 @@ class MovebankAPI:
         if save_to:
             df.to_csv(save_to, index=False)
         return df
+
+
+class SimpleMovebankAPI:
+    def __init__(self, mb):
+        self.mb = mb
+
+    def get_cat_id(self, simple_id=None, all_=False):
+        individuals = mb.getIndividualsByStudy()
+        if all_:
+            return individuals
+        else:
+            individual_id = [
+                x for x in individuals if x['local_identifier'] == simple_id
+            ][0]['id']
+            return individual_id
+
+    def get_gps(self, individual_id, save=None):
+        gpsevents = mb.getIndividualEvents(individual_id=individual_id,
+                                           sensor_type_id=653,
+                                           transform=False)
+        gps_df = mb.to_pandas(gpsevents, sensor_type='gps', transformed=False)
+        if save:
+            ps_df.to_csv(save, index=False)
+        return gps_df
+
+    def get_acc(self,
+                individual_id,
+                start_timestamp=None,
+                duration=None,
+                save=None):
+        accevents = mb.getIndividualEvents(
+            individual_id=individual_id,
+            sensor_type_id=2365683,
+            transform=True,
+        )
+        acc_df = mb.to_pandas(accevents, sensor_type='acc', transformed=True)
+        if start and duration:
+            # start_timestamp format: 2021-09-29 14:10:12
+            dur = [int(x) for x in dur.split(':')]
+            end_timestamp = (dateparser.parse(start_timestamp) + \
+             timedelta(
+              hours=dur[0],
+              minutes=dur[1],
+              seconds=dur[2])
+             ).strftime('%Y-%m-%d %H:%M:%S.%f')
+
+            acc_df = acc_df.loc[(acc_df['timestamp'] >= start_timestamp)
+                                & (acc_df['timestamp'] <= end_timestamp)]
+        if save:
+            acc_df.to_csv(save, index=False)
+        return acc_df
+
+
+# mb = MovebankAPI('malyetama', keyring.get_password('movebank', 'malyetama'), 1748526129)
+# smb = SimpleMovebankAPI(mb)
+# cat_id = smb.get_cat_id(simple_id='CAT_001')
